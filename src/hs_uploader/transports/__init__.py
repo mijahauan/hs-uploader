@@ -1,6 +1,7 @@
 """hs-uploader transport implementations."""
 
 from .base import Transport
+from .heartbeat_sftp import HeartbeatSftp
 from .pskreporter import PskReporterTcp
 from .psws_magnetometer import PswsMagnetometerSftp
 from .wsprdaemon import (
@@ -12,6 +13,7 @@ from .wsprnet import WsprNet
 
 __all__ = [
     "Transport",
+    "HeartbeatSftp",
     "PskReporterTcp",
     "PswsMagnetometerSftp",
     "WsprdaemonTarSftp",

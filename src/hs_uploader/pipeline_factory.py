@@ -48,6 +48,7 @@ from .core import Pipeline, RetryPolicy
 from .sources import FileSpec, FileTreeSource
 from .sources.sqlite import SqliteSource
 from .sources.wspr_cycle import WsprCycleSource
+from .transports.heartbeat_sftp import HeartbeatSftp
 from .transports.pskreporter import PskReporterTcp
 from .transports.psws_magnetometer import PswsDatasetSftp
 from .transports.wsprdaemon import WsprdaemonTarFtp, WsprdaemonTarSftp
@@ -203,6 +204,21 @@ def _build_transport(spec: Mapping[str, Any]):
         # collide with the raw-table (wspr.spots) wsprnet pipeline.
         kw["primary_table_name"] = str(spec.get("primary_table_name", "wspr.cycle"))
         return WsprdaemonTarSftp(fallback_ftp=fb, **kw)
+    if ttype == "heartbeat_sftp":
+        # Manifest keys are a cross-repo contract with sigmond's
+        # manifest renderer — implement exactly these, no more.
+        kw = dict(host=str(spec["host"]))
+        if spec.get("port") is not None:
+            kw["port"] = int(spec["port"])
+        if spec.get("sftp_user") is not None:
+            kw["sftp_user"] = str(spec["sftp_user"])
+        if spec.get("remote_path") is not None:
+            kw["remote_path"] = str(spec["remote_path"])
+        if spec.get("connect_timeout_sec") is not None:
+            kw["connect_timeout_sec"] = int(spec["connect_timeout_sec"])
+        if spec.get("name") is not None:
+            kw["name"] = str(spec["name"])
+        return HeartbeatSftp(**kw)
     raise ValueError(f"unknown transport type: {ttype!r}")
 
 

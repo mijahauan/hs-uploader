@@ -8,6 +8,7 @@ from hs_uploader.core import Pipeline
 from hs_uploader.pipeline_factory import build_pipelines
 from hs_uploader.sources import FileTreeSource
 from hs_uploader.sources.sqlite import SqliteSource
+from hs_uploader.transports.heartbeat_sftp import HeartbeatSftp
 from hs_uploader.transports.pskreporter import PskReporterTcp
 from hs_uploader.transports.psws_magnetometer import PswsDatasetSftp
 from hs_uploader.transports.wsprdaemon import WsprdaemonTarFtp, WsprdaemonTarSftp
@@ -249,3 +250,62 @@ def test_wspr_slot_keys_match_in_process_for_cursor_inheritance(tmp_path, monkey
         "wsprnet-async:https://wsprnet.org/api/upload/v1",
         "wspr.spots",
     )
+
+
+# ---- heartbeat_sftp transport (Task 9) ------------------------------------
+
+
+def _heartbeat_manifest(tmp_path, **transport_overrides):
+    transport = {
+        "type": "heartbeat_sftp",
+        "host": "drop.hamsci.org",
+    }
+    transport.update(transport_overrides)
+    return {
+        "identity": {"call": "AC0G/S", "grid": "EM38ww"},
+        "pipeline": [
+            {
+                "name": "heartbeat",
+                "source": {
+                    "type": "filetree",
+                    "root": str(tmp_path),
+                    "patterns": ["*.json"],
+                    "table": "station.heartbeat",
+                },
+                "transport": transport,
+            },
+        ],
+    }
+
+
+def test_heartbeat_pipeline_builds_full_toml(tmp_path):
+    """A full heartbeat pipeline TOML (filetree source + heartbeat_sftp
+    transport) builds end to end."""
+    pipes = build_pipelines(_heartbeat_manifest(tmp_path), watermark=_wm())
+    assert len(pipes) == 1
+    p = pipes[0]
+    assert isinstance(p, Pipeline)
+    assert isinstance(p.source, FileTreeSource)
+    assert isinstance(p.transport, HeartbeatSftp)
+    assert p.transport.primary_table() == "station.heartbeat"
+
+
+def test_heartbeat_transport_defaults(tmp_path):
+    p = build_pipelines(_heartbeat_manifest(tmp_path), watermark=_wm())[0]
+    assert p.transport.host == "drop.hamsci.org"
+    assert p.transport.port == 22
+    assert p.transport.sftp_user == "hamsci-hb"
+    assert p.transport.remote_path == "incoming"
+
+
+def test_heartbeat_transport_manifest_overrides(tmp_path):
+    m = _heartbeat_manifest(
+        tmp_path,
+        port=2222, sftp_user="hamsci-hb2", remote_path="drop",
+        connect_timeout_sec=5,
+    )
+    p = build_pipelines(m, watermark=_wm())[0]
+    assert p.transport.port == 2222
+    assert p.transport.sftp_user == "hamsci-hb2"
+    assert p.transport.remote_path == "drop"
+    assert p.transport.connect_timeout_sec == 5
