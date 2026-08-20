@@ -18,9 +18,19 @@ Wire protocol: one sftp invocation per batch — every file's ``put`` (in
 record order), then every file's ``rename`` (in record order).  Each
 file goes to ``<remote_path>/<basename>.part`` and is then renamed to
 ``<remote_path>/<basename>`` — the remote basename is the local
-basename UNCHANGED (station identity travels in-band, in the JSON
-payload itself, AND via the SFTP login; the server cross-checks the
-two).
+basename UNCHANGED.
+
+TRUST MODEL: station identity travels in-band — the ``station`` field
+inside the JSON payload, plus the filename — NOT via the SFTP login.
+The login is a single shared chrooted account (``hamsci-hb``); every
+authorized station authenticates as the same user, so the login proves
+"some authorized station" and nothing more.  There is no server-side
+cross-check between the login and the in-band station field.
+Per-station keys give revocation (pull one station's key, it can no
+longer connect), not attribution — the server trusts whatever the
+envelope claims.  Acceptable for an owned fleet; see
+``server/heartbeat/ingest.py`` in sigmond for the matching note on the
+receiving end.
 
 Retry semantics: the file IS the payload and a retry is free, so ANY
 failure (sftp rc != 0, or the source file having vanished) returns
@@ -102,9 +112,20 @@ class HeartbeatSftp:
         paths = [Path(r.payload_path) for r in batch.records if r.payload_path]
         if not paths:
             return Outcome.acked()
+        # Stat (not just exists()) up front, and keep the sizes: a
+        # concurrent prune (root's 24h spool prune) can unlink these
+        # files between a successful upload and a post-upload stat,
+        # which would otherwise raise out of ship() despite the
+        # transfer having already succeeded.  The file IS the payload
+        # and a retry is free, so a vanished file before upload is
+        # still retry_later — but once we have captured its size here,
+        # that size is what we report, even if the file disappears
+        # later in this call.
+        sizes = []
         for p in paths:
-            if not p.exists():
-                # File IS the payload; retry is free — never permanent.
+            try:
+                sizes.append(p.stat().st_size)
+            except OSError:
                 return Outcome.retry_later(f"file vanished before upload: {p}")
         _ensure_identity_key(identity)
         files = [(p, p.name) for p in paths]
@@ -112,8 +133,7 @@ class HeartbeatSftp:
         if rc != 0:
             logger.warning("HeartbeatSftp: sftp rc=%d: %s", rc, out[-300:].strip())
             return Outcome.retry_later(f"sftp rc={rc}: {out[-200:].strip()}")
-        n_bytes = sum(p.stat().st_size for p in paths)
-        return Outcome(kind="acked", n_bytes=n_bytes)
+        return Outcome(kind="acked", n_bytes=sum(sizes))
 
     def serialize_for_retry(self, batch: RecordBatch, identity) -> bytes:
         items = []

@@ -170,6 +170,36 @@ def test_ship_success_acked_with_n_bytes(tmp_path):
     assert outcome.n_bytes == 12
 
 
+def test_ship_survives_concurrent_prune_during_upload(tmp_path):
+    """n_bytes must be captured BEFORE the sftp invocation, not after.
+
+    A concurrent prune (root's 24h spool prune) can unlink the source
+    file the instant the transfer completes — between the successful
+    sftp call and a post-upload stat.  ship() must still return acked
+    with the pre-captured size, not raise.
+    """
+    p1 = tmp_path / "a.json"
+    p1.write_bytes(b"12345")
+    p2 = tmp_path / "b.json"
+    p2.write_bytes(b"1234567")
+    batch = RecordBatch(records=(_rec(p1), _rec(p2)), cursor_after=b"")
+    t = HeartbeatSftp(host="drop.example")
+
+    def fake_run(cmd, input=None, capture_output=False, timeout=None):
+        # Simulate a prune deleting the files mid-"upload", after
+        # ship() has already stat'd them but before any post-upload
+        # stat could run.
+        p1.unlink()
+        p2.unlink()
+        return _run_ok()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        outcome = t.ship(batch, _ident())
+
+    assert outcome.kind == "acked"
+    assert outcome.n_bytes == 12
+
+
 def test_ship_empty_batch_acked():
     t = HeartbeatSftp(host="drop.example")
     outcome = t.ship(RecordBatch(records=(), cursor_after=b""), _ident())
