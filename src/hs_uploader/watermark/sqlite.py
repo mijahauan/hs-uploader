@@ -20,6 +20,7 @@ Schema:
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import threading
 from pathlib import Path
@@ -81,6 +82,9 @@ CREATE TABLE IF NOT EXISTS dead_letter (
 def default_path() -> Path:
     base = os.environ.get("HS_UPLOADER_STATE_DIR", "/var/lib/hs-uploader")
     return Path(base) / "watermarks.db"
+
+
+logger = logging.getLogger(__name__)
 
 
 class SqliteWatermarkStore:
@@ -229,6 +233,25 @@ class SqliteWatermarkStore:
         commit_token: bytes = b"",
     ) -> int:
         with self._lock, self._conn:
+            if cursor_after:
+                # hs-uploader#4: a deliverable is identified by what it
+                # advances the cursor TO.  Two rows for the same
+                # (pipeline, cursor_after) are the same work queued twice
+                # — the retry storm's raw material — so keep the first.
+                # Empty cursors (file-tree sources: each file is its own
+                # payload) are never collapsed.
+                row = self._conn.execute(
+                    "SELECT id FROM deliverables WHERE pipeline=? AND "
+                    "cursor_after=? ORDER BY id LIMIT 1",
+                    (pipeline, cursor_after),
+                ).fetchone()
+                if row is not None:
+                    logger.warning(
+                        "%s: deliverable for cursor %r already queued (id %s) "
+                        "— not enqueuing a duplicate", pipeline,
+                        cursor_after[:40], row["id"],
+                    )
+                    return int(row["id"])
             cur = self._conn.execute(
                 "INSERT INTO deliverables(pipeline, payload_blob, enqueued_at, "
                 "attempts, next_attempt_at, source_id, dest_id, table_name, "

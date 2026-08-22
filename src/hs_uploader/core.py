@@ -363,6 +363,20 @@ class Uploader:
             any_attempted = True
             outcome = pipe.transport.replay(deliverable.payload_blob, pipe.identity)
             self._handle_outcome(pipe, deliverable, outcome, now)
+            if outcome.kind == "retry_later":
+                # The destination is failing RIGHT NOW: the next due
+                # deliverable will fail the same way, so draining the rest
+                # this pump only turns a backlog into a connection storm
+                # (hs-uploader#4: 1,176 retries at ~4 conn/s against gw2
+                # after a link came back).  One probe per pump interval is
+                # the rate cap; the backlog waits for the next pump.
+                logger.info(
+                    "%s: destination failing (%s) — deferring the remaining "
+                    "%d queued deliverable(s) to the next pump",
+                    pipe.name, outcome.reason,
+                    pipe.watermark.deliverable_count(pipe.name),
+                )
+                break
         return any_attempted
 
     def _drain_source(self, pipe: Pipeline) -> bool:
@@ -410,6 +424,16 @@ class Uploader:
                 shipped += len(batch.records)
                 any_shipped = True
                 progressed = True
+                if not outcome.succeeded:
+                    # A failed first attempt leaves the cursor where it was
+                    # (retry_later queued a deliverable; permanent went to
+                    # dead-letter without advancing), so re-querying the
+                    # source can only re-yield the SAME batch.  Continuing
+                    # the drain loop here is the hs-uploader#4 hot loop:
+                    # 20000/17 = 1,176 duplicate deliverables of one wspr
+                    # cycle in 47 s.  Stop; the next pump (or the queued
+                    # deliverable's retry) picks it up.
+                    return True
                 if budget is None:
                     # Historical mode: one batch per pump and out.
                     return True
