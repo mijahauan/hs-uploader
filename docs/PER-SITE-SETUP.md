@@ -1,5 +1,7 @@
 # Per-site outbound setup (bringing up reporting at a new site)
 
+> **Operators:** the step-by-step narrative is [sigmond `operator/registration.md`](https://github.com/HamSCI/sigmond/blob/main/docs/operator/registration.md); this page is the per-transport reference.
+
 This is the operator playbook for getting a sigmond site's data flowing to the
 upstream networks via `hs-uploader`. It was written from the worked bring-up of
 **sigma (AC0G / EM38ww)** on 2026-06-29 and is meant to be reproducible at any
