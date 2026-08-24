@@ -235,6 +235,11 @@ class PswsMagnetometerSftp:
             remote_zip = self._remote_path(dataset_path.name)
             batch_lines += [
                 f'put "{dataset_path}" "{remote_zip}.part"',
+                # SFTP rename fails when the destination exists, which
+                # aborts the whole batch on any re-upload.  Clear it only
+                # AFTER the new bytes have landed, error-tolerant so a
+                # first upload (nothing to remove) still succeeds.
+                f'-rm "{remote_zip}"',
                 f'rename "{remote_zip}.part" "{remote_zip}"',
             ]
         # ``-mkdir`` (leading dash) tells sftp's batch mode to ignore an
