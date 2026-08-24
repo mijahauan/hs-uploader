@@ -410,3 +410,50 @@ def test_rename_is_preceded_by_error_tolerant_rm(tmp_path):
     # rm must come after the upload (so a failed transfer never destroys the
     # server's copy) and immediately before the rename.
     assert put_idx < rm_idx < ren_idx
+
+
+# ---- retry path (deliverables) ----------------------------------------------
+#
+# core._drain_deliverables() calls transport.replay() for every queued
+# deliverable, and refuses to drain the source while any remain.  A replay
+# that can never succeed therefore wedges the pipeline permanently — seen
+# live on B4: "mag-psws: destination failing ... deferring" every pump, no
+# sftp attempt at all.  Retry must re-ship the dataset from its path.
+
+
+def test_serialize_for_retry_carries_the_dataset_path(tmp_path):
+    z, rec = _zip_record(tmp_path)
+    batch = RecordBatch(records=[rec], cursor_after=b"")
+    t = _mag_transport()
+    assert t.serialize_for_retry(batch, _ident()).decode() == str(z)
+
+
+def test_replay_reships_the_dataset(tmp_path):
+    z, rec = _zip_record(tmp_path, date="2026-08-22")
+    t = _mag_transport()
+
+    captured = {}
+    def _capture(*args, **kwargs):
+        captured["input"] = kwargs["input"]
+        res = MagicMock(); res.returncode = 0
+        res.stdout = b""; res.stderr = b""
+        return res
+
+    with patch("subprocess.run", side_effect=_capture):
+        outcome = t.replay(str(z).encode(), _ident("S000170"))
+
+    assert outcome.kind == "acked"
+    assert 'magData/OBS2026-08-22T00:00.zip.part' in captured["input"].decode()
+
+
+def test_replay_of_vanished_dataset_is_permanent(tmp_path):
+    t = _mag_transport()
+    outcome = t.replay(str(tmp_path / "gone.zip").encode(), _ident("S000170"))
+    assert outcome.kind == "permanent"
+
+
+def test_replay_without_a_path_is_permanent_not_an_endless_retry(tmp_path):
+    """Deliverables enqueued by the old empty-blob build must drain, not spin."""
+    t = _mag_transport()
+    outcome = t.replay(b"", _ident("S000170"))
+    assert outcome.kind == "permanent"

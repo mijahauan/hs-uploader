@@ -180,17 +180,26 @@ class PswsMagnetometerSftp:
         return Outcome.acked()
 
     def serialize_for_retry(self, batch: RecordBatch, identity) -> bytes:
-        # Daily zips are byte-stable on disk; serializing for retry
-        # would mean inlining the zip bytes.  We instead point the
-        # replay path at the same on-disk file (the FileTreeSource
-        # leaves it in place until ack).  Empty blob is the signal.
-        return b""
+        # Datasets are bytes-on-disk and the FileTreeSource leaves them in
+        # place until ack, so the retry blob is just the path — never the
+        # payload itself (a GRAPE dataset is gigabytes).
+        paths = [r.payload_path for r in batch.records if r.payload_path]
+        return str(paths[0]).encode() if paths else b""
 
     def replay(self, payload_blob: bytes, identity) -> Outcome:
-        # Retries re-walk the queue rather than reconstruct from blob.
-        # The orchestrator handles this by re-pulling a batch through
-        # ship() rather than calling replay() for the empty-blob case.
-        return Outcome.retry_later("psws-mag retries go through fresh ship()")
+        # ``core._drain_deliverables`` retries through here and will not
+        # drain the source while deliverables remain, so an outcome that
+        # can never succeed wedges the whole pipeline.  Re-ship from the
+        # recorded path; if it is gone (or was never recorded, as in
+        # deliverables queued by older builds) say so permanently and let
+        # the deliverable drain to dead-letter.
+        if not payload_blob:
+            return Outcome.permanent_failure(
+                "no dataset path in retry blob (deliverable predates the "
+                "path-carrying build); the source will re-ship if the "
+                "dataset is still queued"
+            )
+        return self._upload_one(Path(payload_blob.decode()), identity)
 
     # ---- internals ---------------------------------------------------------
 
