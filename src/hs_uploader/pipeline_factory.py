@@ -143,6 +143,17 @@ def _build_transport(spec: Mapping[str, Any]):
         kw["bandwidth_limit_kbps"] = None if bw in (None, 0, "0", "") else int(bw)
         if spec.get("name"):
             kw["name"] = str(spec["name"])
+        # Placement + trigger-naming knobs (addMAG magnetometer convention
+        # vs GRAPE default) — a cross-repo contract with mag-recorder's
+        # deploy.toml block; keep the key names.
+        if spec.get("remote_path") is not None:
+            kw["remote_path"] = str(spec["remote_path"])
+        if spec.get("trigger_path") is not None:
+            kw["trigger_path"] = str(spec["trigger_path"])
+        if spec.get("trigger_prefix") is not None:
+            kw["trigger_prefix"] = str(spec["trigger_prefix"])
+        if spec.get("trigger_ts_colons") is not None:
+            kw["trigger_ts_colons"] = bool(spec["trigger_ts_colons"])
         return PswsDatasetSftp(**kw)
     if ttype == "pskreporter":
         kw = {}

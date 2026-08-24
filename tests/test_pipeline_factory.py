@@ -309,3 +309,38 @@ def test_heartbeat_transport_manifest_overrides(tmp_path):
     assert p.transport.sftp_user == "hamsci-hb2"
     assert p.transport.remote_path == "drop"
     assert p.transport.connect_timeout_sec == 5
+
+
+def test_psws_dataset_trigger_knobs_pass_through(tmp_path, monkeypatch):
+    """addMAG magnetometer convention (Bill Engelke 2026-08-24): the four
+    transport keys mag-recorder's deploy.toml declares must reach the
+    transport unchanged — sigmond's manifest renderer is verbatim, so the
+    factory is the only place they could get dropped."""
+    monkeypatch.setenv("SIGMOND_SQLITE_PATH", str(tmp_path / "sink.db"))
+    m = _manifest(tmp_path)
+    m["pipeline"] = [{
+        "name": "mag-psws",
+        "source": {
+            "type": "filetree", "root": str(tmp_path),
+            "patterns": ["*.zip"], "retention": "delete_on_ack",
+            "table": "mag.daily_zip",
+        },
+        "transport": {
+            "type": "psws_dataset", "instrument_id": "372",
+            "table": "mag.daily_zip", "sftp_user": "S000170",
+            "remote_path": "magData", "trigger_path": "",
+            "trigger_prefix": "m", "trigger_ts_colons": True,
+        },
+        "identity": {"station_id": "S000170"},
+    }]
+    mag = build_pipelines(m, watermark=_wm())[0]
+    t = mag.transport
+    assert isinstance(t, PswsDatasetSftp)
+    assert t.remote_path == "magData"
+    assert t.trigger_path == ""
+    assert t.trigger_prefix == "m"
+    assert t.trigger_ts_colons is True
+    # GRAPE pipeline (no knobs) keeps the defaults.
+    grape = build_pipelines(_manifest(tmp_path), watermark=_wm())[0].transport
+    assert (grape.remote_path, grape.trigger_path, grape.trigger_prefix,
+            grape.trigger_ts_colons) == ("", "", "c", False)

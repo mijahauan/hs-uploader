@@ -19,15 +19,26 @@ yielded as a ``Record`` with ``payload_path`` set.  For directory
 datasets use ``match_dirs=True`` + ``retention="keep"`` (GRAPE keeps
 datasets locally); for single-file zips ``delete_on_ack`` frees disk.
 
-Trigger-directory convention (matches the original GRAPE uploader):
+Trigger-directory convention — GRAPE (the default, matches the original
+GRAPE uploader):
 
     trigger = f"c{dataset_name}_#{instrument_id}_#{timestamp}"
 
 where ``dataset_name`` is the directory name (``OBS2026-05-12T00-00``)
 or the zip's stem (``OBS2026-05-12T00:00``) and ``timestamp`` is ISO
-compact with dashes (``2026-05-13T03-05``) since PSWS treats the
-trigger dir as a filesystem entry and colons there break some
-processing tools.
+compact with dashes (``2026-05-13T03-05``); the trigger is created in
+the same directory the data went to.
+
+Magnetometer (PSWS ``addMAG``, per Bill Engelke 2026-08-24): the zip
+must land in the station's ``magData/`` subdirectory while the trigger
+is created at the TOP level of the station home, named
+
+    m{dataset_name}_#{instrument_id}_#{upload_time}
+
+with colons kept in both timestamps — e.g.
+``mOBS2026-08-11T00:00_#372_#2026-08-24T17:30`` (verified ingesting on
+S000170).  Select it with ``remote_path="magData"``, ``trigger_path=""``,
+``trigger_prefix="m"``, ``trigger_ts_colons=True``.
 
 Note on verification: this transport treats a zero sftp return code as
 success and does NOT re-``ls`` the trigger directory afterwards.  The
@@ -78,9 +89,20 @@ class PswsMagnetometerSftp:
         Defaults to ``identity.ssh_key_file`` (shared with the Grape
         upload path).
     remote_path
-        Where on the server to ``put`` the zip.  PSWS uses the
-        login user's home directory by default; the trigger
-        directory is mkdir'd at the same level.
+        Where on the server to ``put`` the dataset, relative to the
+        login user's home (``""`` = the home itself).  Ensured with an
+        error-tolerant ``mkdir`` before the transfer.
+    trigger_path
+        Where the trigger directory is mkdir'd.  ``None`` (default)
+        means "same place as the data" (GRAPE); ``""`` means the top
+        level of the station home (addMAG magnetometer convention).
+    trigger_prefix
+        Leading character(s) of the trigger name: ``"c"`` (GRAPE,
+        default) or ``"m"`` (magnetometer).
+    trigger_ts_colons
+        Keep colons in the trigger's upload-time stamp
+        (``2026-08-24T17:30``) instead of dashes (``2026-08-24T17-30``).
+        addMAG expects colons; GRAPE expects dashes.
     bandwidth_limit_kbps
         Currently advisory — ``sftp -l`` accepts kbit/s but we
         don't pass it yet.  Wired through for future use.
@@ -102,6 +124,9 @@ class PswsMagnetometerSftp:
         sftp_user: Optional[str] = None,
         ssh_key_file: Optional[str] = None,
         remote_path: str = "",
+        trigger_path: Optional[str] = None,
+        trigger_prefix: str = "c",
+        trigger_ts_colons: bool = False,
         table: str = TABLE,
         connect_timeout_sec: int = 10,
         xfer_timeout_sec: int = 3600,
@@ -114,6 +139,11 @@ class PswsMagnetometerSftp:
         self.sftp_user_override = sftp_user
         self.ssh_key_override = ssh_key_file
         self.remote_path = remote_path.rstrip("/")
+        self.trigger_path = (
+            self.remote_path if trigger_path is None else trigger_path.rstrip("/")
+        )
+        self.trigger_prefix = trigger_prefix
+        self.trigger_ts_colons = trigger_ts_colons
         self.table = table
         # Instance-level ACCEPTS so a GRAPE pipeline (table="grape.dataset")
         # and a magnetometer pipeline (default "mag.daily_zip") can share
@@ -196,11 +226,14 @@ class PswsMagnetometerSftp:
         except ValueError as exc:
             return Outcome.permanent_failure(str(exc))
 
+        # A non-home data directory (e.g. addMAG's magData/) is ensured
+        # first; ``-mkdir`` tolerates "already exists".
+        batch_lines = [f'-mkdir "{self.remote_path}"'] if self.remote_path else []
         if is_dir:
-            batch_lines = self._dir_put_lines(dataset_path, dataset_name)
+            batch_lines += self._dir_put_lines(dataset_path, dataset_name)
         else:
             remote_zip = self._remote_path(dataset_path.name)
-            batch_lines = [
+            batch_lines += [
                 f'put "{dataset_path}" "{remote_zip}.part"',
                 f'rename "{remote_zip}.part" "{remote_zip}"',
             ]
@@ -209,7 +242,7 @@ class PswsMagnetometerSftp:
         # re-upload / retry whose trigger dir already exists still
         # succeeds (rc=0).  put/rename stay strict so real transfer
         # failures still surface.
-        batch_lines.append(f'-mkdir "{self._remote_path(trigger)}"')
+        batch_lines.append(f'-mkdir "{self._trigger_remote_path(trigger)}"')
         batch_lines.append("quit")
         batch_input = ("\n".join(batch_lines) + "\n").encode()
 
@@ -266,12 +299,15 @@ class PswsMagnetometerSftp:
     def _remote_path(self, leaf: str) -> str:
         return f"{self.remote_path}/{leaf}" if self.remote_path else leaf
 
+    def _trigger_remote_path(self, trigger: str) -> str:
+        return f"{self.trigger_path}/{trigger}" if self.trigger_path else trigger
+
     def _trigger_dir_name(self, dataset_name: str) -> str:
-        # Match hf-timestd's Grape SFTPUpload.upload() exactly:
-        # timestamp portion uses ISO-with-dashes, not colons, so the
-        # trigger directory is filesystem-safe on the PSWS side.
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M")
-        return f"c{dataset_name}_#{self.instrument_id}_#{ts}"
+        # GRAPE (default): match hf-timestd's Grape SFTPUpload.upload()
+        # exactly — dashes in the upload-time stamp.  addMAG: colons.
+        fmt = "%Y-%m-%dT%H:%M" if self.trigger_ts_colons else "%Y-%m-%dT%H-%M"
+        ts = datetime.now(timezone.utc).strftime(fmt)
+        return f"{self.trigger_prefix}{dataset_name}_#{self.instrument_id}_#{ts}"
 
     def _run_sftp(
         self,

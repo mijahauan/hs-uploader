@@ -292,3 +292,92 @@ def test_dir_upload_failure_retry_later(tmp_path):
     with patch("subprocess.run", side_effect=_run_fail):
         outcome = t.ship(batch, _ident())
     assert outcome.kind == "retry_later"
+
+
+# ---- PSWS magnetometer convention (Bill Engelke, 2026-08-24) ----------------
+#
+# addMAG ingests magnetometer datasets only when (a) the zip lands in the
+# station's ``magData/`` subdirectory and (b) the trigger directory is
+# created at the TOP level of the station home, named
+# ``m<dataset>_#<instrument>_#<upload-time>`` with colons kept in both
+# timestamps — verified by his hand-made trigger
+# ``mOBS2026-08-11T00:00_#372_#2026-08-24T17:30`` on S000170.
+# GRAPE keeps the ``c…`` / dashes / same-directory convention, so all of
+# this is opt-in per transport.
+
+
+def _mag_transport(**kw):
+    base = dict(
+        instrument_id="372",
+        remote_path="magData",
+        trigger_path="",
+        trigger_prefix="m",
+        trigger_ts_colons=True,
+    )
+    base.update(kw)
+    return PswsMagnetometerSftp(**base)
+
+
+def test_mag_trigger_name_follows_addmag_convention():
+    t = _mag_transport()
+    name = t._trigger_dir_name("OBS2026-08-11T00:00")
+    assert re.match(
+        r"^mOBS2026-08-11T00:00_#372_#\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$", name
+    ), name
+
+
+def test_mag_zip_lands_in_magdata_and_trigger_at_top_level(tmp_path):
+    z, rec = _zip_record(tmp_path, date="2026-08-11")
+    batch = RecordBatch(records=[rec], cursor_after=b"")
+    t = _mag_transport()
+
+    captured = {}
+    def _capture(*args, **kwargs):
+        captured["input"] = kwargs["input"]
+        res = MagicMock(); res.returncode = 0
+        res.stdout = b""; res.stderr = b""
+        return res
+
+    with patch("subprocess.run", side_effect=_capture):
+        assert t.ship(batch, _ident("S000170")).kind == "acked"
+
+    lines = captured["input"].decode().splitlines()
+    # The data subdirectory is ensured (error-tolerant) before the put.
+    assert lines[0] == '-mkdir "magData"'
+    assert any(l.startswith('put "') and
+               l.endswith('"magData/OBS2026-08-11T00:00.zip.part"') for l in lines)
+    assert 'rename "magData/OBS2026-08-11T00:00.zip.part" "magData/OBS2026-08-11T00:00.zip"' in lines
+    # Trigger is NOT under magData/ — top level of the station home.
+    trig = [l for l in lines if l.startswith('-mkdir "mOBS')]
+    assert len(trig) == 1, lines
+    assert trig[0].startswith('-mkdir "mOBS2026-08-11T00:00_#372_#')
+    assert "magData/mOBS" not in captured["input"].decode()
+    assert lines[-1] == "quit"
+
+
+def test_trigger_path_defaults_to_remote_path_for_grape_back_compat(tmp_path):
+    """No trigger_path given -> trigger goes where the data goes (old behavior)."""
+    z, rec = _zip_record(tmp_path, date="2026-05-12")
+    batch = RecordBatch(records=[rec], cursor_after=b"")
+    t = PswsMagnetometerSftp(instrument_id="RM3100", remote_path="incoming")
+
+    captured = {}
+    def _capture(*args, **kwargs):
+        captured["input"] = kwargs["input"]
+        res = MagicMock(); res.returncode = 0
+        res.stdout = b""; res.stderr = b""
+        return res
+
+    with patch("subprocess.run", side_effect=_capture):
+        t.ship(batch, _ident())
+
+    body = captured["input"].decode()
+    assert '-mkdir "incoming/cOBS2026-05-12T00:00_#RM3100_#' in body
+
+
+def test_default_convention_unchanged():
+    """GRAPE relies on c-prefix + dashed upload time + no subdirectory."""
+    t = PswsMagnetometerSftp(instrument_id="171", table="grape.dataset")
+    name = t._trigger_dir_name("OBS2026-08-11T00-00")
+    assert re.match(r"^cOBS2026-08-11T00-00_#171_#\d{4}-\d{2}-\d{2}T\d{2}-\d{2}$", name)
+    assert t.remote_path == "" and t.trigger_path == ""
