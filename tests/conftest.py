@@ -8,6 +8,17 @@ mocked via in-memory implementations.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+# pytest puts tests/ on sys.path but not the repo root, so a test using
+# `from tests.<sibling> import ...` fails collection outright -- and a
+# module that never collects is worse than one that fails, because a
+# green run hides it.  Put the root on the path once, here.
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence

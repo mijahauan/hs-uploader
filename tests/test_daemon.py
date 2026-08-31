@@ -61,6 +61,12 @@ def test_build_all_pipelines_generic_plus_builder(tmp_path, monkeypatch):
 
 def test_load_manifest_and_dry_run(tmp_path, monkeypatch):
     monkeypatch.setenv("SIGMOND_SQLITE_PATH", str(tmp_path / "sink.db"))
+    # The daemon opens the watermark store even for a dry run, and
+    # default_path() falls back to /var/lib/hs-uploader.  Without this the
+    # test reaches for the real system path: it passes on a station, where
+    # that directory exists, and fails everywhere else -- passing for a
+    # reason that has nothing to do with what it is testing.
+    monkeypatch.setenv("HS_UPLOADER_STATE_DIR", str(tmp_path))
     manifest = tmp_path / "pipelines.toml"
     manifest.write_text(textwrap.dedent(f"""
         [identity]
